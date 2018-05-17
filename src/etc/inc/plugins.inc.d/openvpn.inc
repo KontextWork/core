@@ -1107,6 +1107,10 @@ function openvpn_fetch_csc_list()
 {
     global $config;
     $result = array();
+
+    // HACK: disable cores CCD handling entirely since we use https://github.com/EugenMayer/opnsense-openvpn-plugin
+    return;
+
     if (!empty($config['openvpn']['openvpn-csc']) && is_array($config['openvpn']['openvpn-csc'])) {
         $all_servers = array_keys(openvpn_get_remote_access_servers());
         foreach ($config['openvpn']['openvpn-csc'] as $settings) {
