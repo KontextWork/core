@@ -54,13 +54,39 @@ function get_openvpn_server($serverid)
     return null;
 }
 
-function parse_auth_properties($props)
+function parse_auth_properties($props, $a_server)
 {
     $result = array();
+    // 1. FreeRadius attributes should be picked first
+    // 2. Only use LDAP based ip/netmask configuration if no Radius based properties have been set
+    //    since those should have higher priority due to the semantic priority Radius would have in such a scenario
     if (!empty($props['Framed-IP-Address']) && !empty($props['Framed-IP-Netmask'])) {
         $cidrmask = 32 - log((ip2long($props['Framed-IP-Netmask']) ^ ip2long('255.255.255.255')) + 1, 2);
         $result['tunnel_network'] = $props['Framed-IP-Address'] . "/" . $cidrmask;
+    } else if ($a_server != null && isset($a_server['ldap_ip_mapping'])){
+        // only map ldap field based ip if the user activated it by ldap_ip_mapping
+
+        /* LDAP attributes, @see https://tools.ietf.org/html/draft-howard-rfc2307bis-02
+         * We support 2 different options:
+         *  - either ipHostNumber and ipNetmaskNumber exists ( ipHost + ipNetwork objectClass )
+         *  - or ipNetmaskNumber is in CIDR annotation ( only ipHost objectClass )
+         */
+        $cidrRegexp = '/^(?P<ip>([0-9]{1,3}\.){3}[0-9]{1,3})\/(?P<cidrmask>[0-9]|[1-2][0-9]|3[0-2])$/';
+        $cidrAnnotationParts = [];
+        // you might wonder why iphostnumber is all lowercase even though the field is camel case ipHostNumber
+        // but this seems how we get the fields
+        if (!empty($props['iphostnumber']) && !empty($props['ipnetmasknumber'])) {
+            $cidrmask = 32-log((ip2long($props['ipnetmasknumber']) ^ ip2long('255.255.255.255'))+1, 2);
+            $result['tunnel_network'] = $props['iphostnumber'] . "/" . $cidrmask;
+        } else if (!empty($props['iphostnumber'] && preg_match($cidrRegexp, $props['iphostnumber'], $cidrAnnotationParts) === 1)) {
+            // in this case ipHostNumber is in CIDR annotation
+            // we could also just use $props['ipHostNumber'] directly since it is already in the CIDR annotation
+            // but validating it / enforcing it might be a good idea in case
+            $result['tunnel_network'] = $cidrAnnotationParts['ip'] . '/' . $cidrAnnotationParts['cidrmask'];
+            syslog(LOG_INFO, "mapped tunnel_network using ldap:" . $result['tunnel_network']);
+        }
     }
+
     if (!empty($props['Framed-Route']) && is_array($props['Framed-Route'])) {
         $result['local_network'] = implode(",", $props['Framed-Route']);
     }
@@ -137,7 +163,7 @@ if (count($argv) > 6) {
                     $cso = array("common_name" => $common_name);
                 }
 
-                $cso = array_merge($cso, parse_auth_properties($authenticator->getLastAuthProperties()));
+                $cso = array_merge($cso, parse_auth_properties($authenticator->getLastAuthProperties(), $a_server));
                 $cso_filename = openvpn_csc_conf_write($cso, $a_server);
                 if (!empty($cso_filename)) {
                     $tmp = empty($a_server['cso_login_matching']) ? "CSO [CN]" : "CSO [USER]";
